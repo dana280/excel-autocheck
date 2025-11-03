@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 סוכן בדיקת מטלות אקסל אקדמיות - גרסה מתקדמת עם בדיקות מרובות
-תומך ב-Streamlit Cloud, GitHub, ו-Claude API (אופציונלי)
+תומך ב-Streamlit Cloud, GitHub, ו-Claude API
 """
 
 import openpyxl
@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple, Any
 from difflib import SequenceMatcher
+import anthropic
+import os
 
 
 class BatchExcelChecker:
@@ -51,19 +53,10 @@ class BatchExcelChecker:
         
         # אתחול Claude API אם נדרש
         self.claude_client = None
-        if use_ai:
-            try:
-                import anthropic
-                import os
-                if os.getenv('ANTHROPIC_API_KEY'):
-                    self.claude_client = anthropic.Anthropic(
-                        api_key=os.getenv('ANTHROPIC_API_KEY')
-                    )
-                    print("✓ Claude API מחובר")
-            except ImportError:
-                print("⚠️  חבילת anthropic לא מותקנת - מצב AI לא זמין")
-            except Exception as e:
-                print(f"⚠️  שגיאה באתחול Claude API: {e}")
+        if use_ai and os.getenv('ANTHROPIC_API_KEY'):
+            self.claude_client = anthropic.Anthropic(
+                api_key=os.getenv('ANTHROPIC_API_KEY')
+            )
         
         self.rubric_wb = None
         self.batch_results = []
@@ -125,9 +118,19 @@ class BatchExcelChecker:
         return None
     
     def _add_grading_sheet_to_file(self, student_file: str, results: Dict, student_id: str):
-        """הוספת גליון בדיקה לקובץ המטלה המקורי"""
+        """
+        הוספת גליון בדיקה לקובץ המטלה המקורי
+        
+        Args:
+            student_file: נתיב לקובץ התלמיד
+            results: תוצאות הבדיקה
+            student_id: מזהה התלמיד
+        """
         try:
+            # טעינת הקובץ
             wb = openpyxl.load_workbook(student_file)
+            
+            # יצירת גליון חדש
             ws = wb.create_sheet("🎓 גליון_בדיקה", 0)
             
             # עיצוב כותרת
@@ -171,11 +174,11 @@ class BatchExcelChecker:
             # צביעה לפי ציון
             percentage = results['percentage']
             if percentage >= 80:
-                color = "00B050"
+                color = "00B050"  # ירוק
             elif percentage >= 60:
-                color = "FFC000"
+                color = "FFC000"  # כתום
             else:
-                color = "FF0000"
+                color = "FF0000"  # אדום
             ws[f'B{row}'].font = Font(size=12, bold=True, color=color)
             
             # כותרות טבלה
@@ -243,7 +246,16 @@ class BatchExcelChecker:
             print(f"⚠️  שגיאה בהוספת גליון בדיקה: {e}")
     
     def check_batch(self, student_files: List[str], student_ids: List[str] = None) -> bool:
-        """בדיקת מספר מטלות בבת אחת"""
+        """
+        בדיקת מספר מטלות בבת אחת
+        
+        Args:
+            student_files: רשימת נתיבים לקבצי תלמידים
+            student_ids: רשימת מזהי תלמידים (אופציונלי)
+        
+        Returns:
+            האם הבדיקה הצליחה
+        """
         if not self.load_rubric():
             return False
         
@@ -254,11 +266,7 @@ class BatchExcelChecker:
         print("="*80)
         
         for student_file, student_id in zip(student_files, student_ids):
-            try:
-                self.check_single_student(student_file, student_id)
-            except Exception as e:
-                print(f"❌ שגיאה בבדיקת {student_id}: {e}")
-                continue
+            self.check_single_student(student_file, student_id)
         
         # יצירת קובץ סיכום
         self._create_summary_excel()
@@ -287,15 +295,17 @@ class BatchExcelChecker:
                 'תאריך_בדיקה': result['check_date']
             }
             
-            # הערות - מה ירד
+            # הערות - מה ירד (מסודר ומספור)
             failed_checks = [c for c in result['checks'] if c['status'] != 'עבר']
             notes = []
-            for check in failed_checks:
+            for idx, check in enumerate(failed_checks, 1):
                 deduction = check['max_points'] - check['earned_points']
                 if deduction > 0:
-                    notes.append(f"{check['section']}: -{deduction:.1f} נקודות")
+                    # הוספת מספור ופירוט
+                    note = f"{idx}. {check['section']} - {check['subsection']}: -{deduction:.1f} נקודות"
+                    notes.append(note)
             
-            row['הערות_מה_ירד'] = '\n'.join(notes) if notes else 'הכל תקין'
+            row['הערות_מה_ירד'] = '\n'.join(notes) if notes else '✓ הכל תקין'
             
             summary_data.append(row)
         
@@ -308,6 +318,7 @@ class BatchExcelChecker:
         with pd.ExcelWriter(summary_file, engine='openpyxl') as writer:
             df.to_excel(writer, sheet_name='סיכום', index=False)
             
+            # עיצוב
             workbook = writer.book
             worksheet = writer.sheets['סיכום']
             
@@ -318,17 +329,46 @@ class BatchExcelChecker:
                 cell.alignment = Alignment(horizontal='center')
             
             # התאמת רוחב עמודות
-            for column in worksheet.columns:
-                max_length = 0
-                column_letter = column[0].column_letter
-                for cell in column:
-                    try:
-                        if len(str(cell.value)) > max_length:
-                            max_length = len(str(cell.value))
-                    except:
-                        pass
-                adjusted_width = min(max_length + 2, 50)
-                worksheet.column_dimensions[column_letter].width = adjusted_width
+            worksheet.column_dimensions['A'].width = 15  # מספר מטלה
+            worksheet.column_dimensions['B'].width = 12  # ציון
+            worksheet.column_dimensions['C'].width = 12  # מקסימום
+            worksheet.column_dimensions['D'].width = 10  # אחוז
+            worksheet.column_dimensions['E'].width = 15  # סטטוס
+            worksheet.column_dimensions['F'].width = 15  # בדיקות שעברו
+            worksheet.column_dimensions['G'].width = 15  # בדיקות שנכשלו
+            worksheet.column_dimensions['H'].width = 20  # תאריך
+            worksheet.column_dimensions['I'].width = 60  # הערות - רחב יותר!
+            
+            # עיצוב תאי הערות - wrap text ויישור למעלה
+            notes_col = 9  # עמודה I (הערות_מה_ירד)
+            
+            # הוספת גבולות לכל התאים
+            thin_border = Border(
+                left=Side(style='thin', color='000000'),
+                right=Side(style='thin', color='000000'),
+                top=Side(style='thin', color='000000'),
+                bottom=Side(style='thin', color='000000')
+            )
+            
+            for row_idx in range(1, len(df) + 2):  # כולל כותרות
+                for col_idx in range(1, len(df.columns) + 1):
+                    cell = worksheet.cell(row=row_idx, column=col_idx)
+                    cell.border = thin_border
+                    
+                    # עיצוב מיוחד לעמודת ההערות
+                    if col_idx == notes_col and row_idx > 1:
+                        cell.alignment = Alignment(
+                            wrap_text=True,
+                            vertical='top',
+                            horizontal='right'
+                        )
+                        
+                        # התאמת גובה שורה לפי מספר ההערות
+                        if cell.value and cell.value != '✓ הכל תקין':
+                            num_lines = cell.value.count('\n') + 1
+                            worksheet.row_dimensions[row_idx].height = max(18 * num_lines, 35)
+                        else:
+                            worksheet.row_dimensions[row_idx].height = 25
             
             # צביעת שורות לפי סטטוס
             for row in range(2, len(df) + 2):
@@ -348,3 +388,40 @@ class BatchExcelChecker:
         print(f"\n📊 קובץ סיכום נוצר: {summary_file}")
         
         return summary_file
+
+
+# דוגמת שימוש
+if __name__ == "__main__":
+    print("="*80)
+    print("🎓 בודק מטלות אקסל - גרסת Batch")
+    print("="*80)
+    
+    if len(sys.argv) < 3:
+        print("\n📖 שימוש:")
+        print("  python batch_excel_checker.py <מחוון> <תיקיית_מטלות>")
+        print("\nדוגמה:")
+        print("  python batch_excel_checker.py rubric.xlsx students/")
+        sys.exit(1)
+    
+    rubric_file = sys.argv[1]
+    students_dir = Path(sys.argv[2])
+    
+    # איסוף כל קבצי האקסל
+    student_files = list(students_dir.glob("*.xlsx")) + list(students_dir.glob("*.xls"))
+    student_files = [str(f) for f in student_files]
+    
+    if not student_files:
+        print(f"❌ לא נמצאו קבצי אקסל בתיקייה: {students_dir}")
+        sys.exit(1)
+    
+    print(f"\n📁 נמצאו {len(student_files)} מטלות לבדיקה")
+    
+    # יצירת הבודק
+    checker = BatchExcelChecker(
+        rubric_file=rubric_file,
+        output_dir="batch_results",
+        use_ai=False  # שנה ל-True אם יש API key
+    )
+    
+    # הרצת בדיקת מטלות
+    checker.check_batch(student_files)
