@@ -296,53 +296,99 @@ def run_single_check(rubric_file, student_file):
 def run_batch_check(rubric_file, student_files, student_ids=None):
     """הרצת בדיקה של מספר מטלות"""
     
-    with st.spinner(f'🔄 מבצע בדיקה של {len(student_files)} מטלות... אנא המתן'):
-        try:
-            temp_dir = Path(tempfile.gettempdir()) / "batch_check"
-            temp_dir.mkdir(exist_ok=True)
-            
-            # שמירת מחוון
-            rubric_path = temp_dir / f"rubric_{rubric_file.name}"
-            with open(rubric_path, 'wb') as f:
-                f.write(rubric_file.getvalue())
-            
-            # שמירת כל קבצי התלמידים
-            student_paths = []
-            for student_file in student_files:
-                student_path = temp_dir / student_file.name
-                with open(student_path, 'wb') as f:
-                    f.write(student_file.getvalue())
-                student_paths.append(str(student_path))
-            
-            # הגדרות
-            config = {
-                'partial_credit': st.session_state.get('partial_credit', True),
-                'sheet_name_similarity_threshold': st.session_state.get('similarity_threshold', 0.6),
-                'strict_mode': st.session_state.get('strict_mode', False)
-            }
-            
-            # יצירת בודק Batch
-            checker = BatchExcelChecker(
-                rubric_file=str(rubric_path),
-                config=config,
-                output_dir=str(temp_dir / "results"),
-                use_ai=False
-            )
-            
-            # הרצת הבדיקה
-            if checker.check_batch(student_paths, student_ids):
-                st.session_state.batch_results = checker.batch_results
-                st.session_state.batch_checker = checker
-                st.session_state.summary_file = checker.summary_df
-                st.success(f"✅ בדיקת {len(student_files)} מטלות הושלמה!")
-                st.balloons()
-                st.rerun()
-            else:
-                st.error("❌ הבדיקה נכשלה")
+    try:
+        # הודעת התחלה
+        st.info(f"🚀 מתחיל בדיקת {len(student_files)} מטלות...")
         
-        except Exception as e:
-            st.error(f"❌ שגיאה: {str(e)}")
-            st.exception(e)
+        # יצירת progress bar
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        temp_dir = Path(tempfile.gettempdir()) / "batch_check"
+        temp_dir.mkdir(exist_ok=True)
+        
+        # שלב 1: שמירת מחוון
+        status_text.text("📁 שומר קובץ מחוון...")
+        rubric_path = temp_dir / f"rubric_{rubric_file.name}"
+        with open(rubric_path, 'wb') as f:
+            f.write(rubric_file.getvalue())
+        progress_bar.progress(10)
+        
+        # שלב 2: שמירת קבצי תלמידים
+        status_text.text(f"📁 שומר {len(student_files)} קבצי מטלות...")
+        student_paths = []
+        for idx, student_file in enumerate(student_files):
+            student_path = temp_dir / student_file.name
+            with open(student_path, 'wb') as f:
+                f.write(student_file.getvalue())
+            student_paths.append(str(student_path))
+            progress_bar.progress(10 + int((idx + 1) / len(student_files) * 20))
+        
+        # הגדרות
+        config = {
+            'partial_credit': st.session_state.get('partial_credit', True),
+            'sheet_name_similarity_threshold': st.session_state.get('similarity_threshold', 0.6),
+            'strict_mode': st.session_state.get('strict_mode', False)
+        }
+        
+        # שלב 3: טעינת מחוון
+        status_text.text("📋 טוען מחוון...")
+        checker = BatchExcelChecker(
+            rubric_file=str(rubric_path),
+            config=config,
+            output_dir=str(temp_dir / "results"),
+            use_ai=False
+        )
+        
+        if not checker.load_rubric():
+            st.error("❌ שגיאה בטעינת המחוון")
+            return
+        
+        progress_bar.progress(35)
+        
+        # שלב 4: בדיקת מטלות אחת אחת
+        if not student_ids:
+            student_ids = [Path(f).stem for f in student_paths]
+        
+        for idx, (student_file, student_id) in enumerate(zip(student_paths, student_ids)):
+            status_text.text(f"🔍 בודק מטלה {idx + 1}/{len(student_files)}: {student_id}")
+            
+            try:
+                result = checker.check_single_student(student_file, student_id)
+                if result:
+                    st.success(f"✅ {student_id}: {result['total_score']:.1f}/{result['max_score']}")
+                else:
+                    st.warning(f"⚠️ {student_id}: בעיה בבדיקה")
+            except Exception as e:
+                st.error(f"❌ {student_id}: {str(e)}")
+            
+            # עדכון progress
+            progress = 35 + int((idx + 1) / len(student_files) * 55)
+            progress_bar.progress(progress)
+        
+        # שלב 5: יצירת סיכום
+        status_text.text("📊 יוצר קובץ סיכום...")
+        checker._create_summary_excel()
+        progress_bar.progress(95)
+        
+        # שמירת תוצאות
+        st.session_state.batch_results = checker.batch_results
+        st.session_state.batch_checker = checker
+        st.session_state.summary_file = checker.summary_df
+        
+        # סיום
+        progress_bar.progress(100)
+        status_text.text("✅ הבדיקה הושלמה!")
+        
+        st.success(f"🎉 בדיקת {len(student_files)} מטלות הושלמה בהצלחה!")
+        st.balloons()
+        
+        # מעבר לטאב תוצאות
+        st.rerun()
+    
+    except Exception as e:
+        st.error(f"❌ שגיאה כללית: {str(e)}")
+        st.exception(e)
 
 
 def display_results(results):
